@@ -2,6 +2,8 @@ import gradio as gr
 from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator
 from qiskit.visualization import plot_histogram
+import matplotlib
+matplotlib.use('Agg') # Use non-interactive backend to speed up startup
 import matplotlib.pyplot as plt
 import io
 import base64
