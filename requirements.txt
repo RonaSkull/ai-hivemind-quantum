@@ -1,7 +1,7 @@
 gradio
-qiskit
-qiskit-aer
+yfinance
 matplotlib
 numpy<1.24
-requests
-gunicorn
+qiskit>=1.0.0
+qiskit-aer>=0.12.0
+qiskit-optimization>=0.6.0
