@@ -1,106 +1,197 @@
 import gradio as gr
+import yfinance as yf
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+# Qiskit imports for Portfolio Optimization
+from qiskit_algorithms.minimum_eigensolvers import QAOA
+from qiskit_algorithms.optimizers import COBYLA
+from qiskit_optimization.applications import PortfolioOptimization
+from qiskit_optimization.converters import QuadraticProgramToQubo
+from qiskit_optimization.algorithms import MinimumEigenOptimizer
+from qiskit.primitives import Sampler
+
+# Qiskit imports for Circuit Simulation
 from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator
 from qiskit.visualization import plot_histogram
-import matplotlib
-matplotlib.use('Agg') # Use non-interactive backend to speed up startup
-import matplotlib.pyplot as plt
-import io
-import base64
-import os
-from qiskit.qasm2 import dumps
 
-def run_quantum_demo(circuit_type: str):
+# --- Portfolio Optimization Functions ---
+
+def get_stock_data(tickers, start_date="2023-01-01", end_date="2024-01-01"):
+    """Fetches historical stock data from Yahoo Finance."""
+    data = yf.download(tickers, start=start_date, end=end_date)['Adj Close']
+    return data
+
+def run_portfolio_optimization(ticker_string: str):
     """
-    Creates, runs a quantum circuit, and returns the results as a markdown string.
+    Performs quantum portfolio optimization for a given list of stock tickers.
     """
     try:
-        # 1. Create Quantum Circuit
-        if circuit_type == "Bell State":
-            # Creates a 2-qubit Bell state
-            qc = QuantumCircuit(2, 2)
-            qc.h(0)
-            qc.cx(0, 1)
-            qc.measure([0, 1], [0, 1])
-        elif circuit_type == "GHZ State":
-            # Creates a 3-qubit GHZ state
-            qc = QuantumCircuit(3, 3)
-            qc.h(0)
-            qc.cx(0, 1)
-            qc.cx(0, 2)
-            qc.measure([0, 1, 2], [0, 1, 2])
-        elif circuit_type == "Teleportation":
-            # Quantum Teleportation for 1 qubit
-            qc = QuantumCircuit(3, 3)
-            qc.h(1)
-            qc.cx(1, 2)
-            qc.cx(0, 1)
-            qc.h(0)
-            qc.measure([0, 1], [0, 1])
-            qc.cx(1, 2)
-            qc.cz(0, 2)
-            qc.measure([2], [2])
-        else:
-            return "## Error: Invalid circuit type selected."
+        # 1. Get Stock Data
+        tickers = [ticker.strip().upper() for ticker in ticker_string.split(',')]
+        if len(tickers) < 2:
+            return "## Error\nPlease provide at least two stock tickers, separated by commas.", None
 
-        # 2. Simulate the circuit
-        simulator = AerSimulator()
-        job = simulator.run(qc, shots=1024)
-        result = job.result()
-        counts = result.get_counts(qc)
+        stock_data = get_stock_data(tickers)
+        if stock_data.empty or stock_data.isnull().values.any():
+            return f"## Error\nCould not fetch valid data for all tickers: {tickers}. Please check the symbols.", None
 
-        # 3. Visualize the results
-        # Generate plot
-        fig = plot_histogram(counts, title=f'{circuit_type} - Measurement Results')
+        # 2. Formulate the Optimization Problem
+        mu = stock_data.pct_change().mean().values
+        sigma = stock_data.pct_change().cov().values
         
-        # Save plot to a bytes buffer
-        buf = io.BytesIO()
+        q = 0.5  # Risk aversion factor
+        budget = len(tickers) // 2 # Number of assets to select
+        
+        portfolio = PortfolioOptimization(expected_returns=mu, covariances=sigma, risk_factor=q, budget=budget)
+        qp = portfolio.to_quadratic_program()
+
+        # 3. Solve with Quantum Algorithm (QAOA)
+        qaoa_mes = QAOA(sampler=Sampler(), optimizer=COBYLA(), initial_point=[0.0, 0.0])
+        qp2qubo = QuadraticProgramToQubo()
+        qubo = qp2qubo.convert(qp)
+        
+        optimizer = MinimumEigenOptimizer(qaoa_mes)
+        result = optimizer.solve(qubo)
+        
+        # 4. Format and Return Results
+        selection = portfolio.interpret(result)
+        allocation = {tickers[i]: val * 100 for i, val in enumerate(selection) if val > 0}
+
+        # Create a plot for visualization
+        fig, ax = plt.subplots()
+        ax.pie(allocation.values(), labels=allocation.keys(), autopct='%1.1f%%', startangle=90)
+        ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+        plt.title('Optimized Portfolio Allocation')
+        
+        # Save plot to a buffer
+        buf = os.path.join(os.getcwd(), "portfolio.png")
         plt.savefig(buf, format='png', bbox_inches='tight')
-        buf.seek(0)
+        plt.close(fig)
+
+        # Prepare markdown output
+        output_md = f"""## Quantum Portfolio Optimization Results
+
+**Optimized Allocation ({budget} assets selected):**
+"""
+        for stock, pct in allocation.items():
+            output_md += f"- **{stock}**: {pct:.2f}%\n"
         
-        # Encode plot to base64
-        img_str = base64.b64encode(buf.getvalue()).decode('utf-8')
-        plt.close(fig) # Close the plot to free memory
-
-        # 4. Format the output
-        # QASM code
-        qasm_code = dumps(qc)
-        
-        # Measurement results
-        counts_str = "\n".join([f"- {state}: {count}" for state, count in counts.items()])
-
-        # Create markdown output
-        output_md = f"""
-        ## Quantum Circuit: {circuit_type}
-
-        ### QASM Code
-        ```qasm
-        {qasm_code}
-        ```
-
-        ### Measurement Results (1024 shots)
-        {counts_str}
-
-        ### Histogram
-        ![Histogram](data:image/png;base64,{img_str})
-        """
-        return output_md
+        return output_md, buf
 
     except Exception as e:
-        return f"## An unexpected error occurred: {str(e)}"
+        return f"## An error occurred:\n\n```\n{str(e)}\n```", None
 
-# Gradio Interface
-demo = gr.Interface(
-    fn=run_quantum_demo,
-    inputs=gr.Dropdown(
-        ["Bell State", "GHZ State", "Teleportation"], 
-        label="Select Quantum Circuit",
-        value="Bell State"
-    ),
-    outputs=gr.Markdown(label="Results"),
-    title="Interactive Quantum Circuit Demo",
-    description="Select a quantum circuit to run on a simulator. The QASM code, measurement results, and a histogram will be displayed.",
-    allow_flagging="never"
-)
+# --- Quantum Circuit Functions ---
 
-demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get('PORT', 7860)))
+def create_bell_circuit():
+    """Creates a Bell state circuit."""
+    qc = QuantumCircuit(2, 2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure([0, 1], [0, 1])
+    return qc
+
+def create_ghz_circuit():
+    """Creates a GHZ state circuit."""
+    qc = QuantumCircuit(3, 3)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.cx(0, 2)
+    qc.measure([0, 1, 2], [0, 1, 2])
+    return qc
+
+def create_teleportation_circuit():
+    """Creates a quantum teleportation circuit."""
+    qc = QuantumCircuit(3, 3)
+    qc.rx(np.pi / 4, 0) 
+    qc.barrier()
+    qc.h(1)
+    qc.cx(1, 2)
+    qc.barrier()
+    qc.cx(0, 1)
+    qc.h(0)
+    qc.barrier()
+    qc.measure([0, 1], [0, 1])
+    qc.barrier()
+    qc.cx(1, 2)
+    qc.cz(0, 2)
+    qc.measure(2, 2)
+    return qc
+
+def run_quantum_circuit(circuit_name):
+    """Runs a selected quantum circuit and returns results."""
+    if circuit_name == "Bell State":
+        qc = create_bell_circuit()
+    elif circuit_name == "GHZ State":
+        qc = create_ghz_circuit()
+    else: # Teleportation
+        qc = create_teleportation_circuit()
+
+    circuit_diagram_path = os.path.join(os.getcwd(), "circuit.png")
+    qc.draw(output='mpl', filename=circuit_diagram_path, style="iqp")
+
+    simulator = AerSimulator()
+    job = simulator.run(qc, shots=1024)
+    result = job.result()
+    counts = result.get_counts(qc)
+
+    histogram_path = os.path.join(os.getcwd(), "histogram.png")
+    plot_histogram(counts).savefig(histogram_path)
+
+    counts_str = "### Measurement Results (Counts):\n"
+    for outcome, count in counts.items():
+        counts_str += f"- `{outcome}`: {count}\n"
+
+    return circuit_diagram_path, counts_str, histogram_path
+
+# --- Gradio Interface ---
+with gr.Blocks(theme=gr.themes.Soft()) as iface:
+    gr.Markdown("# 🚀 AI-HI Quantum Demonstrations")
+    
+    with gr.Tabs():
+        # Tab 1: Portfolio Optimization
+        with gr.TabItem("📈 Quantum Portfolio Optimizer"):
+            gr.Markdown("Enter stock tickers (e.g., AAPL, GOOG, MSFT) to find the optimal portfolio allocation using a quantum algorithm (QAOA).")
+            
+            with gr.Row():
+                ticker_input = gr.Textbox(label="Stock Tickers (comma-separated)", placeholder="e.g., AAPL, GOOG, MSFT, NVDA")
+                optimizer_btn = gr.Button("Optimize Portfolio")
+
+            with gr.Row():
+                optimizer_results = gr.Markdown()
+                optimizer_plot = gr.Image(type="filepath")
+
+            optimizer_btn.click(
+                fn=run_portfolio_optimization,
+                inputs=ticker_input,
+                outputs=[optimizer_results, optimizer_plot]
+            )
+
+        # Tab 2: Quantum Circuit Demos
+        with gr.TabItem("⚛️ Quantum Circuit Simulator"):
+            gr.Markdown("Select a fundamental quantum circuit to simulate its execution and view the results.")
+            
+            with gr.Row():
+                circuit_dropdown = gr.Dropdown(
+                    ["Bell State", "GHZ State", "Teleportation"], label="Select Circuit"
+                )
+                circuit_btn = gr.Button("Run Simulation")
+            
+            with gr.Row():
+                circuit_diagram = gr.Image(label="Circuit Diagram")
+                with gr.Column():
+                    circuit_results = gr.Markdown()
+                    circuit_histogram = gr.Image(label="Result Histogram")
+            
+            circuit_btn.click(
+                fn=run_quantum_circuit,
+                inputs=circuit_dropdown,
+                outputs=[circuit_diagram, circuit_results, circuit_histogram]
+            )
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 7860))
+    iface.launch(server_name="0.0.0.0", server_port=port)
