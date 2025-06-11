@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import io
 import base64
 import os
+from qiskit.qasm2 import dumps
 
 def run_quantum_demo(circuit_type: str):
     """
@@ -61,7 +62,7 @@ def run_quantum_demo(circuit_type: str):
 
         # 4. Format the output
         # QASM code
-        qasm_code = qc.qasm()
+        qasm_code = dumps(qc)
         
         # Measurement results
         counts_str = "\n".join([f"- {state}: {count}" for state, count in counts.items()])
