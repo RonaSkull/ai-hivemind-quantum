@@ -1,0 +1,7 @@
+gradio
+qiskit
+qiskit-aer
+matplotlib
+numpy<1.24
+requests
+gunicorn
